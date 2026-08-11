@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QVBoxLayout, QW
 
 from magclip.core.magazine import Magazine
 from magclip.core.parser import parse_tabular_text
-from magclip.plugins.sequential_tab import SequentialTabEngine
+from magclip.plugins.leave_entry import LeaveEntryEngine
 
 
 class Bridge(QObject):
@@ -28,6 +28,9 @@ class AppContext:
 
     def press_tab(self) -> None:
         keyboard.send("tab")
+
+    def press_space(self) -> None:
+        keyboard.send("space")
 
     def should_abort(self) -> bool:
         return self.abort_event.is_set()
@@ -89,7 +92,7 @@ class MagclipApp:
         self.magazine = Magazine()
         self.abort_event = threading.Event()
         self.bridge = Bridge()
-        self.engine = SequentialTabEngine(delay_ms=120, tab_after_last=False)
+        self.engine = LeaveEntryEngine(delay_ms=120)
         self.context = AppContext(self.abort_event)
         self.running = False
 
@@ -105,6 +108,12 @@ class MagclipApp:
         if not values:
             return
 
+        if len(values) != len(self.engine.field_names):
+            self.bridge.status.emit(
+                f"BATCH ERROR — EXPECTED {len(self.engine.field_names)} FIELDS, GOT {len(values)}"
+            )
+            return
+
         self.running = True
         self.abort_event.clear()
         self.bridge.status.emit("RUNNING — F3 ABORT")
@@ -117,6 +126,8 @@ class MagclipApp:
                 self.bridge.status.emit("READY")
             elif result.aborted:
                 self.bridge.status.emit("ABORTED")
+            else:
+                self.bridge.status.emit("BATCH ERROR")
             self.running = False
             self.bridge.refresh.emit()
 
