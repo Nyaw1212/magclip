@@ -83,6 +83,9 @@ class RoundMonitor(QWidget):
         delay_layout.addWidget(self.delay_label)
         delay_layout.addWidget(self.delay_spin)
 
+        self.hotkeys_label = QLabel("F1 Fire  •  R Reload Last Round  •  F4 Reload Batch  •  F3 Abort")
+        self.hotkeys_label.setWordWrap(True)
+
         layout = QVBoxLayout(self)
         layout.addWidget(self.status_label)
         layout.addWidget(self.progress_label)
@@ -90,6 +93,7 @@ class RoundMonitor(QWidget):
         layout.addWidget(self.next_label)
         layout.addLayout(mode_layout)
         layout.addLayout(delay_layout)
+        layout.addWidget(self.hotkeys_label)
         layout.addWidget(self.load_button)
 
         self.load_button.clicked.connect(self.load_clipboard)
@@ -181,6 +185,15 @@ class MagclipApp:
     def abort(self) -> None:
         self.abort_event.set()
 
+    def reload_last_round(self) -> None:
+        if self.running:
+            return
+        if self.magazine.reload_last_round():
+            self.bridge.status.emit("LAST ROUND RELOADED")
+            self.bridge.refresh.emit()
+        else:
+            self.bridge.status.emit("NO LAST ROUND")
+
     def reload_last_batch(self) -> None:
         if self.running:
             return
@@ -198,6 +211,7 @@ def main() -> int:
     monitor.show()
 
     keyboard.add_hotkey("f1", controller.fire_current_batch, suppress=True)
+    keyboard.add_hotkey("r", controller.reload_last_round, suppress=True)
     keyboard.add_hotkey("f3", controller.abort, suppress=True)
     keyboard.add_hotkey("f4", controller.reload_last_batch, suppress=True)
 
