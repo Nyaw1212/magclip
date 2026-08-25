@@ -50,6 +50,9 @@ class AppContext:
 
 
 class RoundMonitor(QWidget):
+    SEQUENCE_SLOTS = 20
+    SEQUENCE_COLUMNS = 4
+
     def __init__(self, controller: "MagclipApp") -> None:
         super().__init__()
         self.controller = controller
@@ -57,7 +60,7 @@ class RoundMonitor(QWidget):
         self.bridge = controller.bridge
         self.setWindowTitle("MAGCLIP")
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
-        self.setMinimumWidth(440)
+        self.setMinimumWidth(560)
 
         self.status_label = QLabel("READY")
         self.progress_label = QLabel("No magazine loaded")
@@ -88,18 +91,18 @@ class RoundMonitor(QWidget):
         delay_layout.addWidget(self.delay_spin)
 
         self.sequence_label = QLabel(
-            "Custom sequence (optional). Any selected actions override Rounds per F1."
+            "Custom sequence (optional) — up to 20 actions. Selected actions override Rounds per F1."
         )
         self.sequence_boxes: list[QComboBox] = []
         sequence_layout = QGridLayout()
-        for index in range(8):
+        for index in range(self.SEQUENCE_SLOTS):
             label = QLabel(str(index + 1))
             box = QComboBox()
             box.addItems(["NONE", "PASTE", "TAB", "ENTER", "SPACE"])
             box.currentTextChanged.connect(self._sequence_changed)
             self.sequence_boxes.append(box)
-            row = index // 4
-            col = (index % 4) * 2
+            row = index // self.SEQUENCE_COLUMNS
+            col = (index % self.SEQUENCE_COLUMNS) * 2
             sequence_layout.addWidget(label, row, col)
             sequence_layout.addWidget(box, row, col + 1)
 
@@ -173,7 +176,7 @@ class MagclipApp:
         self.engine = LeaveEntryEngine(delay_ms=120)
         self.context = AppContext(self.abort_event)
         self.running = False
-        self.rounds_per_fire: int | None = None  # None means ALL.
+        self.rounds_per_fire: int | None = None
         self.custom_sequence: list[str] = []
 
     def set_rounds_per_fire(self, value: str) -> None:
@@ -188,11 +191,10 @@ class MagclipApp:
         self.bridge.status.emit(f"DELAY: {value} ms")
 
     def set_custom_sequence(self, actions: list[str]) -> None:
-        # NONE slots are ignored; the remaining order is executed exactly.
         self.custom_sequence = [action for action in actions if action != "NONE"]
         if self.custom_sequence:
             preview = " → ".join(self.custom_sequence)
-            self.bridge.status.emit(f"CUSTOM: {preview}")
+            self.bridge.status.emit(f"CUSTOM ({len(self.custom_sequence)}): {preview}")
         else:
             self.bridge.status.emit("CUSTOM SEQUENCE OFF")
 
