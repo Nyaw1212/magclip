@@ -45,6 +45,9 @@ class AppContext:
     def press_space(self) -> None:
         keyboard.send("space")
 
+    def press_escape(self) -> None:
+        keyboard.send("esc")
+
     def should_abort(self) -> bool:
         return self.abort_event.is_set()
 
@@ -98,7 +101,7 @@ class RoundMonitor(QWidget):
         for index in range(self.SEQUENCE_SLOTS):
             label = QLabel(str(index + 1))
             box = QComboBox()
-            box.addItems(["NONE", "PASTE", "TAB", "ENTER", "SPACE"])
+            box.addItems(["NONE", "PASTE", "TAB", "ENTER", "SPACE", "ESC"])
             box.currentTextChanged.connect(self._sequence_changed)
             self.sequence_boxes.append(box)
             row = index // self.SEQUENCE_COLUMNS
