@@ -26,8 +26,10 @@ class Magazine:
         return not self.batches
 
     def load(self, rows: List[List[str]]) -> None:
+        # Preserve blank cells inside a copied spreadsheet row. They still
+        # represent real fields/rounds and must not shift later columns left.
         self.batches = [
-            Batch([Round(value) for value in row if value != ""])
+            Batch([Round(value) for value in row])
             for row in rows
             if any(value != "" for value in row)
         ]
