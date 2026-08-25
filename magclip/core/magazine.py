@@ -20,6 +20,7 @@ class Magazine:
         self.batch_index = 0
         self.round_index = 0
         self.last_fired_batch_index: Optional[int] = None
+        self.last_round_position: Optional[tuple[int, int]] = None
 
     @property
     def empty(self) -> bool:
@@ -36,6 +37,7 @@ class Magazine:
         self.batch_index = 0
         self.round_index = 0
         self.last_fired_batch_index = None
+        self.last_round_position = None
 
     def current_batch(self) -> Optional[Batch]:
         if self.empty or self.batch_index >= len(self.batches):
@@ -64,11 +66,27 @@ class Magazine:
         batch = self.current_batch()
         if batch is None:
             return
+
+        # Remember the exact round that was just completed so R can chamber it
+        # again even if advancing moved us into the next batch.
+        self.last_round_position = (self.batch_index, self.round_index)
         self.round_index += 1
         if self.round_index >= len(batch.rounds):
             self.last_fired_batch_index = self.batch_index
             self.batch_index += 1
             self.round_index = 0
+
+    def reload_last_round(self) -> bool:
+        if self.last_round_position is None:
+            return False
+        batch_index, round_index = self.last_round_position
+        if batch_index >= len(self.batches):
+            return False
+        if round_index >= len(self.batches[batch_index].rounds):
+            return False
+        self.batch_index = batch_index
+        self.round_index = round_index
+        return True
 
     def reload_last_batch(self) -> bool:
         if self.last_fired_batch_index is None:
@@ -80,6 +98,7 @@ class Magazine:
     def reset(self) -> None:
         self.batch_index = 0
         self.round_index = 0
+        self.last_round_position = None
 
     def progress(self) -> tuple[int, int, int, int]:
         total_batches = len(self.batches)
