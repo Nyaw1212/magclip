@@ -11,13 +11,15 @@ class LeaveEntryEngine(MagclipEngine):
     Batch order:
     TYPE, START, END, STATUS, VL, SL, LWOP
 
-    A fire may execute only part of a batch. Normal fields are pasted and TAB
-    is sent only when another round remains in the same fire. LWOP is special:
-    a truthy/non-zero value presses SPACE and LWOP never sends TAB.
+    Normal firing can execute only part of a batch. Custom sequences can mix
+    PASTE, TAB, ENTER, and SPACE actions. Each PASTE consumes one magazine round.
+    LWOP keeps its special behavior: a truthy/non-zero value presses SPACE
+    instead of pasting text.
     """
 
     name = "leave_entry"
     field_names = ("TYPE", "START", "END", "STATUS", "VL", "SL", "LWOP")
+    valid_actions = {"PASTE", "TAB", "ENTER", "SPACE"}
 
     def __init__(self, delay_ms: int = 120) -> None:
         self.delay_ms = delay_ms
@@ -51,19 +53,68 @@ class LeaveEntryEngine(MagclipEngine):
                 if self._lwop_enabled(value):
                     context.press_space()
                     self._wait()
-                # LWOP is always terminal and never sends TAB.
                 continue
 
             context.paste_text(value)
             self._wait()
 
-            # Stop on the last requested round without moving focus. This gives
-            # e.g. 3 rounds: paste -> tab -> paste -> tab -> paste -> stop.
             if not is_last_in_fire:
                 context.press_tab()
                 self._wait()
 
         return EngineResult(completed=True)
+
+    def run_sequence(
+        self,
+        context: EngineContext,
+        values: list[str],
+        start_round: int,
+        actions: list[str],
+    ) -> tuple[EngineResult, int]:
+        """Execute a custom action sequence.
+
+        Returns (result, consumed_rounds). Only PASTE consumes a round.
+        """
+        consumed = 0
+
+        for action in actions:
+            if context.should_abort():
+                return EngineResult(completed=False, aborted=True), consumed
+
+            if action not in self.valid_actions:
+                return EngineResult(completed=False), consumed
+
+            if action == "PASTE":
+                if consumed >= len(values):
+                    return EngineResult(completed=False), consumed
+
+                field_index = start_round + consumed
+                if field_index >= len(self.field_names):
+                    return EngineResult(completed=False), consumed
+
+                value = values[consumed]
+                field_name = self.field_names[field_index]
+
+                if field_name == "LWOP":
+                    if self._lwop_enabled(value):
+                        context.press_space()
+                else:
+                    context.paste_text(value)
+
+                consumed += 1
+                self._wait()
+                continue
+
+            if action == "TAB":
+                context.press_tab()
+            elif action == "ENTER":
+                context.press_enter()
+            elif action == "SPACE":
+                context.press_space()
+
+            self._wait()
+
+        return EngineResult(completed=True), consumed
 
     def run_batch(self, context: EngineContext, values: list[str]) -> EngineResult:
         if len(values) != len(self.field_names):
