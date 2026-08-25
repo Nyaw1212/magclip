@@ -12,14 +12,14 @@ class LeaveEntryEngine(MagclipEngine):
     TYPE, START, END, STATUS, VL, SL, LWOP
 
     Normal firing can execute only part of a batch. Custom sequences can mix
-    PASTE, TAB, ENTER, and SPACE actions. Each PASTE consumes one magazine round.
-    LWOP keeps its special behavior: a truthy/non-zero value presses SPACE
-    instead of pasting text.
+    PASTE, TAB, ENTER, SPACE, and ESC actions. Each PASTE consumes one magazine
+    round. LWOP keeps its special behavior: a truthy/non-zero value presses
+    SPACE instead of pasting text.
     """
 
     name = "leave_entry"
     field_names = ("TYPE", "START", "END", "STATUS", "VL", "SL", "LWOP")
-    valid_actions = {"PASTE", "TAB", "ENTER", "SPACE"}
+    valid_actions = {"PASTE", "TAB", "ENTER", "SPACE", "ESC"}
 
     def __init__(self, delay_ms: int = 120) -> None:
         self.delay_ms = delay_ms
@@ -111,6 +111,8 @@ class LeaveEntryEngine(MagclipEngine):
                 context.press_enter()
             elif action == "SPACE":
                 context.press_space()
+            elif action == "ESC":
+                context.press_escape()
 
             self._wait()
 
