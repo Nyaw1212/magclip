@@ -9,6 +9,7 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -38,6 +39,9 @@ class AppContext:
     def press_tab(self) -> None:
         keyboard.send("tab")
 
+    def press_enter(self) -> None:
+        keyboard.send("enter")
+
     def press_space(self) -> None:
         keyboard.send("space")
 
@@ -53,7 +57,7 @@ class RoundMonitor(QWidget):
         self.bridge = controller.bridge
         self.setWindowTitle("MAGCLIP")
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
-        self.setMinimumWidth(360)
+        self.setMinimumWidth(440)
 
         self.status_label = QLabel("READY")
         self.progress_label = QLabel("No magazine loaded")
@@ -83,7 +87,28 @@ class RoundMonitor(QWidget):
         delay_layout.addWidget(self.delay_label)
         delay_layout.addWidget(self.delay_spin)
 
-        self.hotkeys_label = QLabel("F1 Fire  •  R Reload Last Round  •  F4 Reload Batch  •  F3 Abort")
+        self.sequence_label = QLabel(
+            "Custom sequence (optional). Any selected actions override Rounds per F1."
+        )
+        self.sequence_boxes: list[QComboBox] = []
+        sequence_layout = QGridLayout()
+        for index in range(8):
+            label = QLabel(str(index + 1))
+            box = QComboBox()
+            box.addItems(["NONE", "PASTE", "TAB", "ENTER", "SPACE"])
+            box.currentTextChanged.connect(self._sequence_changed)
+            self.sequence_boxes.append(box)
+            row = index // 4
+            col = (index % 4) * 2
+            sequence_layout.addWidget(label, row, col)
+            sequence_layout.addWidget(box, row, col + 1)
+
+        self.clear_sequence_button = QPushButton("Clear Custom Sequence")
+        self.clear_sequence_button.clicked.connect(self.clear_custom_sequence)
+
+        self.hotkeys_label = QLabel(
+            "F1 Fire  •  R Reload Last Round  •  F4 Reload Batch  •  F3 Abort"
+        )
         self.hotkeys_label.setWordWrap(True)
 
         layout = QVBoxLayout(self)
@@ -93,6 +118,9 @@ class RoundMonitor(QWidget):
         layout.addWidget(self.next_label)
         layout.addLayout(mode_layout)
         layout.addLayout(delay_layout)
+        layout.addWidget(self.sequence_label)
+        layout.addLayout(sequence_layout)
+        layout.addWidget(self.clear_sequence_button)
         layout.addWidget(self.hotkeys_label)
         layout.addWidget(self.load_button)
 
@@ -102,6 +130,17 @@ class RoundMonitor(QWidget):
         self.bridge.refresh.connect(self.refresh_view)
         self.bridge.status.connect(self.status_label.setText)
         self.refresh_view()
+
+    def _sequence_changed(self) -> None:
+        actions = [box.currentText() for box in self.sequence_boxes]
+        self.controller.set_custom_sequence(actions)
+
+    def clear_custom_sequence(self) -> None:
+        for box in self.sequence_boxes:
+            box.blockSignals(True)
+            box.setCurrentText("NONE")
+            box.blockSignals(False)
+        self.controller.set_custom_sequence([])
 
     def load_clipboard(self) -> None:
         rows = parse_tabular_text(pyperclip.paste())
@@ -135,14 +174,27 @@ class MagclipApp:
         self.context = AppContext(self.abort_event)
         self.running = False
         self.rounds_per_fire: int | None = None  # None means ALL.
+        self.custom_sequence: list[str] = []
 
     def set_rounds_per_fire(self, value: str) -> None:
         self.rounds_per_fire = None if value == "ALL" else int(value)
-        self.bridge.status.emit(f"FIRE MODE: {value} ROUND{'S' if value != '1' else ''}")
+        if not self.custom_sequence:
+            self.bridge.status.emit(
+                f"FIRE MODE: {value} ROUND{'S' if value != '1' else ''}"
+            )
 
     def set_delay_ms(self, value: int) -> None:
         self.engine.delay_ms = value
         self.bridge.status.emit(f"DELAY: {value} ms")
+
+    def set_custom_sequence(self, actions: list[str]) -> None:
+        # NONE slots are ignored; the remaining order is executed exactly.
+        self.custom_sequence = [action for action in actions if action != "NONE"]
+        if self.custom_sequence:
+            preview = " → ".join(self.custom_sequence)
+            self.bridge.status.emit(f"CUSTOM: {preview}")
+        else:
+            self.bridge.status.emit("CUSTOM SEQUENCE OFF")
 
     def fire_current_batch(self) -> None:
         if self.running:
@@ -158,25 +210,52 @@ class MagclipApp:
         if not remaining:
             return
 
-        fire_count = len(remaining) if self.rounds_per_fire is None else min(
-            self.rounds_per_fire, len(remaining)
-        )
-        values = [round_.value for round_ in remaining[:fire_count]]
-
         self.running = True
         self.abort_event.clear()
         self.bridge.status.emit("RUNNING — F3 ABORT")
 
         def worker() -> None:
-            result = self.engine.run_rounds(self.context, values, start_round)
-            if result.completed:
-                for _ in values:
-                    self.magazine.advance_round()
-                self.bridge.status.emit("READY")
-            elif result.aborted:
-                self.bridge.status.emit("ABORTED")
+            if self.custom_sequence:
+                paste_count = self.custom_sequence.count("PASTE")
+                if paste_count == 0:
+                    self.bridge.status.emit("CUSTOM ERROR — ADD AT LEAST ONE PASTE")
+                    self.running = False
+                    return
+                if paste_count > len(remaining):
+                    self.bridge.status.emit("CUSTOM ERROR — NOT ENOUGH ROUNDS")
+                    self.running = False
+                    return
+
+                values = [round_.value for round_ in remaining[:paste_count]]
+                result, consumed = self.engine.run_sequence(
+                    self.context,
+                    values,
+                    start_round,
+                    self.custom_sequence,
+                )
+                if result.completed:
+                    for _ in range(consumed):
+                        self.magazine.advance_round()
+                    self.bridge.status.emit("READY")
+                elif result.aborted:
+                    self.bridge.status.emit("ABORTED")
+                else:
+                    self.bridge.status.emit("SEQUENCE ERROR")
             else:
-                self.bridge.status.emit("BATCH ERROR")
+                fire_count = len(remaining) if self.rounds_per_fire is None else min(
+                    self.rounds_per_fire, len(remaining)
+                )
+                values = [round_.value for round_ in remaining[:fire_count]]
+                result = self.engine.run_rounds(self.context, values, start_round)
+                if result.completed:
+                    for _ in values:
+                        self.magazine.advance_round()
+                    self.bridge.status.emit("READY")
+                elif result.aborted:
+                    self.bridge.status.emit("ABORTED")
+                else:
+                    self.bridge.status.emit("BATCH ERROR")
+
             self.running = False
             self.bridge.refresh.emit()
 
