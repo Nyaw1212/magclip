@@ -6,7 +6,15 @@ import threading
 import keyboard
 import pyperclip
 from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from magclip.core.magazine import Magazine
 from magclip.core.parser import parse_tabular_text
@@ -37,10 +45,11 @@ class AppContext:
 
 
 class RoundMonitor(QWidget):
-    def __init__(self, magazine: Magazine, bridge: Bridge) -> None:
+    def __init__(self, controller: "MagclipApp") -> None:
         super().__init__()
-        self.magazine = magazine
-        self.bridge = bridge
+        self.controller = controller
+        self.magazine = controller.magazine
+        self.bridge = controller.bridge
         self.setWindowTitle("MAGCLIP")
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
         self.setMinimumWidth(360)
@@ -53,16 +62,27 @@ class RoundMonitor(QWidget):
         self.next_label.setWordWrap(True)
         self.load_button = QPushButton("Load Clipboard")
 
+        self.fire_mode_label = QLabel("Rounds per F1:")
+        self.fire_mode = QComboBox()
+        self.fire_mode.addItems(["1", "2", "3", "ALL"])
+        self.fire_mode.setCurrentText("ALL")
+
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(self.fire_mode_label)
+        mode_layout.addWidget(self.fire_mode)
+
         layout = QVBoxLayout(self)
         layout.addWidget(self.status_label)
         layout.addWidget(self.progress_label)
         layout.addWidget(self.current_label)
         layout.addWidget(self.next_label)
+        layout.addLayout(mode_layout)
         layout.addWidget(self.load_button)
 
         self.load_button.clicked.connect(self.load_clipboard)
-        bridge.refresh.connect(self.refresh_view)
-        bridge.status.connect(self.status_label.setText)
+        self.fire_mode.currentTextChanged.connect(self.controller.set_rounds_per_fire)
+        self.bridge.refresh.connect(self.refresh_view)
+        self.bridge.status.connect(self.status_label.setText)
         self.refresh_view()
 
     def load_clipboard(self) -> None:
@@ -84,7 +104,8 @@ class RoundMonitor(QWidget):
         )
         current = self.magazine.current_round()
         self.current_label.setText(f"CURRENT\n{current.value if current else 'DONE'}")
-        self.next_label.setText(f"NEXT\n{self.magazine.next_round_value() or '—'}")
+        next_value = self.magazine.next_round_value()
+        self.next_label.setText(f"NEXT\n{next_value if next_value is not None else '—'}")
 
 
 class MagclipApp:
@@ -95,33 +116,39 @@ class MagclipApp:
         self.engine = LeaveEntryEngine(delay_ms=120)
         self.context = AppContext(self.abort_event)
         self.running = False
+        self.rounds_per_fire: int | None = None  # None means ALL.
+
+    def set_rounds_per_fire(self, value: str) -> None:
+        self.rounds_per_fire = None if value == "ALL" else int(value)
+        self.bridge.status.emit(f"FIRE MODE: {value} ROUND{'S' if value != '1' else ''}")
 
     def fire_current_batch(self) -> None:
         if self.running:
             return
+
         batch = self.magazine.current_batch()
         if batch is None:
             self.bridge.status.emit("EMPTY")
             return
 
-        values = [round_.value for round_ in batch.rounds[self.magazine.round_index :]]
-        if not values:
+        start_round = self.magazine.round_index
+        remaining = batch.rounds[start_round:]
+        if not remaining:
             return
 
-        if len(values) != len(self.engine.field_names):
-            self.bridge.status.emit(
-                f"BATCH ERROR — EXPECTED {len(self.engine.field_names)} FIELDS, GOT {len(values)}"
-            )
-            return
+        fire_count = len(remaining) if self.rounds_per_fire is None else min(
+            self.rounds_per_fire, len(remaining)
+        )
+        values = [round_.value for round_ in remaining[:fire_count]]
 
         self.running = True
         self.abort_event.clear()
         self.bridge.status.emit("RUNNING — F3 ABORT")
 
         def worker() -> None:
-            result = self.engine.run_batch(self.context, values)
+            result = self.engine.run_rounds(self.context, values, start_round)
             if result.completed:
-                while self.magazine.current_batch() is batch:
+                for _ in values:
                     self.magazine.advance_round()
                 self.bridge.status.emit("READY")
             elif result.aborted:
@@ -149,7 +176,7 @@ class MagclipApp:
 def main() -> int:
     qt_app = QApplication(sys.argv)
     controller = MagclipApp()
-    monitor = RoundMonitor(controller.magazine, controller.bridge)
+    monitor = RoundMonitor(controller)
     monitor.show()
 
     keyboard.add_hotkey("f1", controller.fire_current_batch, suppress=True)
