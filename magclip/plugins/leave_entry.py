@@ -8,12 +8,12 @@ from magclip.engine.base import EngineContext, EngineResult, MagclipEngine
 class LeaveEntryEngine(MagclipEngine):
     """Engine for the Manage Leave form.
 
-    Expected batch order:
+    Batch order:
     TYPE, START, END, STATUS, VL, SL, LWOP
 
-    TYPE through SL are pasted and followed by TAB.
-    LWOP is the final command: if it contains a truthy/non-zero value,
-    SPACE is pressed to toggle the checkbox. No TAB is sent after LWOP.
+    A fire may execute only part of a batch. Normal fields are pasted and TAB
+    is sent only when another round remains in the same fire. LWOP is special:
+    a truthy/non-zero value presses SPACE and LWOP never sends TAB.
     """
 
     name = "leave_entry"
@@ -30,27 +30,42 @@ class LeaveEntryEngine(MagclipEngine):
     def _wait(self) -> None:
         time.sleep(self.delay_ms / 1000)
 
-    def run_batch(self, context: EngineContext, values: list[str]) -> EngineResult:
-        if len(values) != len(self.field_names):
-            return EngineResult(completed=False)
-
-        # TYPE, START, END, STATUS, VL, SL
-        for value in values[:-1]:
+    def run_rounds(
+        self,
+        context: EngineContext,
+        values: list[str],
+        start_round: int,
+    ) -> EngineResult:
+        for offset, value in enumerate(values):
             if context.should_abort():
                 return EngineResult(completed=False, aborted=True)
 
+            field_index = start_round + offset
+            if field_index >= len(self.field_names):
+                return EngineResult(completed=False)
+
+            field_name = self.field_names[field_index]
+            is_last_in_fire = offset == len(values) - 1
+
+            if field_name == "LWOP":
+                if self._lwop_enabled(value):
+                    context.press_space()
+                    self._wait()
+                # LWOP is always terminal and never sends TAB.
+                continue
+
             context.paste_text(value)
             self._wait()
-            context.press_tab()
-            self._wait()
 
-        # LWOP is the final field. Toggle only when the sheet value is non-zero.
-        if context.should_abort():
-            return EngineResult(completed=False, aborted=True)
-
-        lwop_value = values[-1]
-        if self._lwop_enabled(lwop_value):
-            context.press_space()
-            self._wait()
+            # Stop on the last requested round without moving focus. This gives
+            # e.g. 3 rounds: paste -> tab -> paste -> tab -> paste -> stop.
+            if not is_last_in_fire:
+                context.press_tab()
+                self._wait()
 
         return EngineResult(completed=True)
+
+    def run_batch(self, context: EngineContext, values: list[str]) -> EngineResult:
+        if len(values) != len(self.field_names):
+            return EngineResult(completed=False)
+        return self.run_rounds(context, values, start_round=0)
