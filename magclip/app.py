@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -71,16 +72,29 @@ class RoundMonitor(QWidget):
         mode_layout.addWidget(self.fire_mode_label)
         mode_layout.addWidget(self.fire_mode)
 
+        self.delay_label = QLabel("Delay:")
+        self.delay_spin = QSpinBox()
+        self.delay_spin.setRange(25, 2000)
+        self.delay_spin.setSingleStep(25)
+        self.delay_spin.setSuffix(" ms")
+        self.delay_spin.setValue(self.controller.engine.delay_ms)
+
+        delay_layout = QHBoxLayout()
+        delay_layout.addWidget(self.delay_label)
+        delay_layout.addWidget(self.delay_spin)
+
         layout = QVBoxLayout(self)
         layout.addWidget(self.status_label)
         layout.addWidget(self.progress_label)
         layout.addWidget(self.current_label)
         layout.addWidget(self.next_label)
         layout.addLayout(mode_layout)
+        layout.addLayout(delay_layout)
         layout.addWidget(self.load_button)
 
         self.load_button.clicked.connect(self.load_clipboard)
         self.fire_mode.currentTextChanged.connect(self.controller.set_rounds_per_fire)
+        self.delay_spin.valueChanged.connect(self.controller.set_delay_ms)
         self.bridge.refresh.connect(self.refresh_view)
         self.bridge.status.connect(self.status_label.setText)
         self.refresh_view()
@@ -121,6 +135,10 @@ class MagclipApp:
     def set_rounds_per_fire(self, value: str) -> None:
         self.rounds_per_fire = None if value == "ALL" else int(value)
         self.bridge.status.emit(f"FIRE MODE: {value} ROUND{'S' if value != '1' else ''}")
+
+    def set_delay_ms(self, value: int) -> None:
+        self.engine.delay_ms = value
+        self.bridge.status.emit(f"DELAY: {value} ms")
 
     def fire_current_batch(self) -> None:
         if self.running:
