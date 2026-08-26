@@ -5,7 +5,7 @@ import threading
 
 import keyboard
 import pyperclip
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from magclip.core.magazine import Magazine
+from magclip.core.inbox import InboxError, MagazineInbox
 from magclip.core.parser import parse_tabular_text
 from magclip.plugins.leave_entry import LeaveEntryEngine
 
@@ -150,9 +151,7 @@ class RoundMonitor(QWidget):
 
     def load_clipboard(self) -> None:
         rows = parse_tabular_text(pyperclip.paste())
-        self.magazine.load(rows)
-        self.bridge.status.emit("READY" if rows else "EMPTY")
-        self.refresh_view()
+        self.controller.load_rows(rows, source="Clipboard")
 
     def refresh_view(self) -> None:
         batch_no, total_batches, round_no, total_rounds = self.magazine.progress()
@@ -181,6 +180,15 @@ class MagclipApp:
         self.running = False
         self.rounds_per_fire: int | None = None
         self.custom_sequence: list[str] = []
+
+    def load_rows(self, rows: list[list[str]], source: str = "") -> None:
+        self.magazine.load(rows)
+        if rows:
+            label = f" — {source}" if source else ""
+            self.bridge.status.emit(f"READY{label}")
+        else:
+            self.bridge.status.emit("EMPTY")
+        self.bridge.refresh.emit()
 
     def set_rounds_per_fire(self, value: str) -> None:
         self.rounds_per_fire = None if value == "ALL" else int(value)
@@ -294,12 +302,34 @@ def main() -> int:
     monitor = RoundMonitor(controller)
     monitor.show()
 
+    inbox = MagazineInbox()
+    inbox_timer = QTimer()
+    inbox_timer.setInterval(700)
+
+    def check_inbox() -> None:
+        # Never replace a magazine that is still being fired. Pending files stay
+        # queued and are loaded automatically when the current magazine finishes.
+        if controller.running or controller.magazine.current_batch() is not None:
+            return
+        try:
+            item = inbox.receive_next()
+        except InboxError as error:
+            controller.bridge.status.emit(str(error))
+            return
+        if item is not None:
+            controller.load_rows(item.rows, source=item.label or "Leave Calendar")
+
+    inbox_timer.timeout.connect(check_inbox)
+    inbox_timer.start()
+    check_inbox()
+
     keyboard.add_hotkey("f1", controller.fire_current_batch, suppress=True)
     keyboard.add_hotkey("r", controller.reload_last_round, suppress=True)
     keyboard.add_hotkey("f3", controller.abort, suppress=True)
     keyboard.add_hotkey("f4", controller.reload_last_batch, suppress=True)
 
     exit_code = qt_app.exec()
+    inbox_timer.stop()
     keyboard.unhook_all_hotkeys()
     return exit_code
 
