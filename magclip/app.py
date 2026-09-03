@@ -71,8 +71,6 @@ class RoundMonitor(QWidget):
         self.bridge = controller.bridge
         self.setWindowTitle("MAGCLIP")
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
-        self.setMinimumWidth(700)
-        self.resize(820, 760)
 
         self.status_label = QLabel("READY")
         self.progress_label = QLabel("No magazine loaded")
@@ -94,18 +92,18 @@ class RoundMonitor(QWidget):
         self.mode_box.addItems(["LEAVE ENTRY", "MONTH TYPER"])
         self.mode_box.setCurrentText("LEAVE ENTRY")
 
-        app_mode_layout = QHBoxLayout()
-        app_mode_layout.addWidget(self.mode_label)
-        app_mode_layout.addWidget(self.mode_box)
+        self.app_mode_layout = QHBoxLayout()
+        self.app_mode_layout.addWidget(self.mode_label)
+        self.app_mode_layout.addWidget(self.mode_box)
 
         self.fire_mode_label = QLabel("Rounds per F1:")
         self.fire_mode = QComboBox()
         self.fire_mode.addItems(["1", "2", "3", "ALL"])
         self.fire_mode.setCurrentText("ALL")
 
-        mode_layout = QHBoxLayout()
-        mode_layout.addWidget(self.fire_mode_label)
-        mode_layout.addWidget(self.fire_mode)
+        self.mode_layout = QHBoxLayout()
+        self.mode_layout.addWidget(self.fire_mode_label)
+        self.mode_layout.addWidget(self.fire_mode)
 
         self.delay_label = QLabel("Delay:")
         self.delay_spin = QSpinBox()
@@ -114,25 +112,27 @@ class RoundMonitor(QWidget):
         self.delay_spin.setSuffix(" ms")
         self.delay_spin.setValue(self.controller.leave_engine.delay_ms)
 
-        delay_layout = QHBoxLayout()
-        delay_layout.addWidget(self.delay_label)
-        delay_layout.addWidget(self.delay_spin)
+        self.delay_layout = QHBoxLayout()
+        self.delay_layout.addWidget(self.delay_label)
+        self.delay_layout.addWidget(self.delay_spin)
 
         self.sequence_label = QLabel(
             "Custom sequence (optional) — up to 20 actions. Selected actions override Rounds per F1 in Leave Entry mode."
         )
         self.sequence_boxes: list[QComboBox] = []
-        sequence_layout = QGridLayout()
+        self.sequence_labels: list[QLabel] = []
+        self.sequence_layout = QGridLayout()
         for index in range(self.SEQUENCE_SLOTS):
             label = QLabel(str(index + 1))
             box = QComboBox()
             box.addItems(["NONE", "PASTE", "TAB", "ENTER", "SPACE", "ESC"])
             box.currentTextChanged.connect(self._sequence_changed)
+            self.sequence_labels.append(label)
             self.sequence_boxes.append(box)
             row = index // self.SEQUENCE_COLUMNS
             col = (index % self.SEQUENCE_COLUMNS) * 2
-            sequence_layout.addWidget(label, row, col)
-            sequence_layout.addWidget(box, row, col + 1)
+            self.sequence_layout.addWidget(label, row, col)
+            self.sequence_layout.addWidget(box, row, col + 1)
 
         self.clear_sequence_button = QPushButton("Clear Custom Sequence")
         self.clear_sequence_button.clicked.connect(self.clear_custom_sequence)
@@ -143,16 +143,18 @@ class RoundMonitor(QWidget):
         self.hotkeys_label.setWordWrap(True)
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(5)
         layout.addWidget(self.status_label)
         layout.addWidget(self.progress_label)
         layout.addWidget(self.current_label)
         layout.addWidget(self.next_label)
         layout.addWidget(self.data_table)
-        layout.addLayout(app_mode_layout)
-        layout.addLayout(mode_layout)
-        layout.addLayout(delay_layout)
+        layout.addLayout(self.app_mode_layout)
+        layout.addLayout(self.mode_layout)
+        layout.addLayout(self.delay_layout)
         layout.addWidget(self.sequence_label)
-        layout.addLayout(sequence_layout)
+        layout.addLayout(self.sequence_layout)
         layout.addWidget(self.clear_sequence_button)
         layout.addWidget(self.hotkeys_label)
         layout.addWidget(self.load_button)
@@ -163,12 +165,50 @@ class RoundMonitor(QWidget):
         self.delay_spin.valueChanged.connect(self.controller.set_delay_ms)
         self.bridge.refresh.connect(self.refresh_view)
         self.bridge.status.connect(self.status_label.setText)
+
+        self.resize(700, 760)
         self.refresh_view()
+        self.apply_mode_layout()
 
     def _mode_changed(self, value: str) -> None:
         self.controller.set_mode(value)
         self.populate_table()
         self.refresh_view()
+        self.apply_mode_layout()
+
+    def apply_mode_layout(self) -> None:
+        month_mode = self.controller.mode == "MONTH TYPER"
+
+        # Month Typer is intended as a compact side monitor. Hide Leave-only
+        # controls and size the window to the four-column table.
+        self.fire_mode_label.setVisible(not month_mode)
+        self.fire_mode.setVisible(not month_mode)
+        self.sequence_label.setVisible(not month_mode)
+        self.clear_sequence_button.setVisible(not month_mode)
+        for label, box in zip(self.sequence_labels, self.sequence_boxes):
+            label.setVisible(not month_mode)
+            box.setVisible(not month_mode)
+
+        if month_mode:
+            self.data_table.setMinimumHeight(360)
+            self.data_table.setMaximumHeight(520)
+            self.data_table.resizeColumnsToContents()
+            table_width = (
+                self.data_table.verticalHeader().width()
+                + sum(self.data_table.columnWidth(i) for i in range(self.data_table.columnCount()))
+                + self.data_table.verticalScrollBar().sizeHint().width()
+                + self.data_table.frameWidth() * 2
+                + 28
+            )
+            compact_width = max(360, min(table_width, 500))
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(520)
+            self.resize(compact_width, 720)
+        else:
+            self.data_table.setMaximumHeight(16777215)
+            self.setMaximumWidth(16777215)
+            self.setMinimumWidth(700)
+            self.resize(max(self.width(), 700), 760)
 
     def _sequence_changed(self) -> None:
         actions = [box.currentText() for box in self.sequence_boxes]
@@ -187,6 +227,7 @@ class RoundMonitor(QWidget):
         self.populate_table()
         self.bridge.status.emit("READY" if rows else "EMPTY")
         self.refresh_view()
+        self.apply_mode_layout()
 
     def _headers_for_columns(self, count: int) -> list[str]:
         if self.controller.mode == "MONTH TYPER" and count == 4:
@@ -221,7 +262,7 @@ class RoundMonitor(QWidget):
 
     def highlight_current_row(self) -> None:
         active_row = self.magazine.batch_index
-        active_brush = QColor(255, 235, 59, 204)  # bright yellow, about 80% opacity
+        active_brush = QColor(255, 235, 59, 204)
         normal_brush = QColor(0, 0, 0, 0)
 
         for row in range(self.data_table.rowCount()):
