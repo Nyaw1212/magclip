@@ -6,7 +6,9 @@ import threading
 import keyboard
 import pyperclip
 from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QComboBox,
     QGridLayout,
@@ -14,6 +16,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -67,7 +71,8 @@ class RoundMonitor(QWidget):
         self.bridge = controller.bridge
         self.setWindowTitle("MAGCLIP")
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(700)
+        self.resize(820, 760)
 
         self.status_label = QLabel("READY")
         self.progress_label = QLabel("No magazine loaded")
@@ -76,6 +81,13 @@ class RoundMonitor(QWidget):
         self.next_label = QLabel("NEXT\n—")
         self.next_label.setWordWrap(True)
         self.load_button = QPushButton("Load Clipboard")
+
+        self.data_table = QTableWidget()
+        self.data_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.data_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.data_table.setAlternatingRowColors(True)
+        self.data_table.verticalHeader().setVisible(True)
+        self.data_table.setMinimumHeight(260)
 
         self.mode_label = QLabel("Mode:")
         self.mode_box = QComboBox()
@@ -135,6 +147,7 @@ class RoundMonitor(QWidget):
         layout.addWidget(self.progress_label)
         layout.addWidget(self.current_label)
         layout.addWidget(self.next_label)
+        layout.addWidget(self.data_table)
         layout.addLayout(app_mode_layout)
         layout.addLayout(mode_layout)
         layout.addLayout(delay_layout)
@@ -154,6 +167,7 @@ class RoundMonitor(QWidget):
 
     def _mode_changed(self, value: str) -> None:
         self.controller.set_mode(value)
+        self.populate_table()
         self.refresh_view()
 
     def _sequence_changed(self) -> None:
@@ -170,8 +184,57 @@ class RoundMonitor(QWidget):
     def load_clipboard(self) -> None:
         rows = parse_tabular_text(pyperclip.paste())
         self.magazine.load(rows)
+        self.populate_table()
         self.bridge.status.emit("READY" if rows else "EMPTY")
         self.refresh_view()
+
+    def _headers_for_columns(self, count: int) -> list[str]:
+        if self.controller.mode == "MONTH TYPER" and count == 4:
+            return ["MONTH", "YEAR", "EARNED", "CREDIT"]
+        if self.controller.mode == "LEAVE ENTRY" and count == 7:
+            return ["TYPE", "START", "END", "STATUS", "VL", "SL", "LWOP"]
+        return [f"COL {index + 1}" for index in range(count)]
+
+    def populate_table(self) -> None:
+        batches = self.magazine.batches
+        if not batches:
+            self.data_table.clear()
+            self.data_table.setRowCount(0)
+            self.data_table.setColumnCount(0)
+            return
+
+        column_count = max(len(batch.rounds) for batch in batches)
+        self.data_table.clear()
+        self.data_table.setRowCount(len(batches))
+        self.data_table.setColumnCount(column_count)
+        self.data_table.setHorizontalHeaderLabels(self._headers_for_columns(column_count))
+
+        for row_index, batch in enumerate(batches):
+            for column_index in range(column_count):
+                value = batch.rounds[column_index].value if column_index < len(batch.rounds) else ""
+                item = QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignCenter)
+                self.data_table.setItem(row_index, column_index, item)
+
+        self.data_table.resizeColumnsToContents()
+        self.highlight_current_row()
+
+    def highlight_current_row(self) -> None:
+        active_row = self.magazine.batch_index
+        active_brush = QColor(255, 235, 59, 204)  # bright yellow, about 80% opacity
+        normal_brush = QColor(0, 0, 0, 0)
+
+        for row in range(self.data_table.rowCount()):
+            for column in range(self.data_table.columnCount()):
+                item = self.data_table.item(row, column)
+                if item is None:
+                    continue
+                item.setBackground(active_brush if row == active_row else normal_brush)
+
+        if 0 <= active_row < self.data_table.rowCount():
+            item = self.data_table.item(active_row, 0)
+            if item is not None:
+                self.data_table.scrollToItem(item, QAbstractItemView.PositionAtCenter)
 
     @staticmethod
     def _month_preview(value: str) -> str:
@@ -180,6 +243,8 @@ class RoundMonitor(QWidget):
 
     def refresh_view(self) -> None:
         batch_no, total_batches, round_no, total_rounds = self.magazine.progress()
+        self.highlight_current_row()
+
         if total_batches == 0:
             self.progress_label.setText("No magazine loaded")
             self.current_label.setText("CURRENT\n—")
