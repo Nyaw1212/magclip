@@ -193,18 +193,17 @@ class RoundMonitor(QWidget):
         next_value = self.magazine.next_round_value()
 
         if self.controller.mode == "MONTH TYPER":
-            if current:
+            batch = self.magazine.current_batch()
+            if batch and batch.rounds:
+                values = [round_.value for round_ in batch.rounds]
+                month = values[0]
+                rest = " | ".join(values[1:])
                 self.current_label.setText(
-                    f"CURRENT\n{current.value}  →  TYPE: {self._month_preview(current.value)}"
+                    f"CURRENT ROW\n{month} → TYPE {self._month_preview(month)} | {rest}"
                 )
             else:
                 self.current_label.setText("CURRENT\nDONE")
-            if next_value is not None:
-                self.next_label.setText(
-                    f"NEXT\n{next_value}  →  TYPE: {self._month_preview(next_value)}"
-                )
-            else:
-                self.next_label.setText("NEXT\n—")
+            self.next_label.setText("F1: TYPE MONTH → TAB → PASTE → TAB → PASTE → TAB → PASTE → TAB")
         else:
             self.current_label.setText(f"CURRENT\n{current.value if current else 'DONE'}")
             self.next_label.setText(f"NEXT\n{next_value if next_value is not None else '—'}")
@@ -226,7 +225,7 @@ class MagclipApp:
     def set_mode(self, value: str) -> None:
         self.mode = value
         if value == "MONTH TYPER":
-            self.bridge.status.emit("MONTH TYPER — F1 TYPES FIRST 3 LETTERS")
+            self.bridge.status.emit("MONTH TYPER — F1 PROCESSES ONE FULL ROW")
         else:
             self.bridge.status.emit("LEAVE ENTRY MODE")
         self.bridge.refresh.emit()
@@ -271,16 +270,21 @@ class MagclipApp:
 
         def worker() -> None:
             if self.mode == "MONTH TYPER":
-                # Month Typer intentionally consumes exactly one round per F1.
-                value = remaining[0].value
-                result = self.month_engine.run_rounds(self.context, [value])
+                if self.magazine.round_index != 0:
+                    self.bridge.status.emit("MONTH TYPER ERROR — RELOAD BATCH WITH F4")
+                    self.running = False
+                    return
+
+                values = [round_.value for round_ in batch.rounds]
+                result = self.month_engine.run_row(self.context, values)
                 if result.completed:
-                    self.magazine.advance_round()
-                    self.bridge.status.emit("READY — MONTH TYPED")
+                    for _ in values:
+                        self.magazine.advance_round()
+                    self.bridge.status.emit("READY — ROW COMPLETE")
                 elif result.aborted:
                     self.bridge.status.emit("ABORTED")
                 else:
-                    self.bridge.status.emit("MONTH TYPER ERROR")
+                    self.bridge.status.emit("MONTH TYPER ERROR — EXPECTED 4 COLUMNS")
             elif self.custom_sequence:
                 paste_count = self.custom_sequence.count("PASTE")
                 if paste_count == 0:
