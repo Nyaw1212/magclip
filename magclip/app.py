@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QPushButton,
     QSpinBox,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from magclip.core.magazine import Magazine
 from magclip.core.parser import parse_tabular_text
+from magclip.core.sequence_store import SequenceStore
 from magclip.plugins.leave_entry import LeaveEntryEngine
 from magclip.plugins.month_typer import MonthTyperEngine
 
@@ -69,6 +71,8 @@ class RoundMonitor(QWidget):
         self.controller = controller
         self.magazine = controller.magazine
         self.bridge = controller.bridge
+        self.sequence_store = SequenceStore()
+
         self.setWindowTitle("MAGCLIP")
         self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
 
@@ -91,19 +95,17 @@ class RoundMonitor(QWidget):
         self.mode_box = QComboBox()
         self.mode_box.addItems(["LEAVE ENTRY", "MONTH TYPER"])
         self.mode_box.setCurrentText("LEAVE ENTRY")
-
-        self.app_mode_layout = QHBoxLayout()
-        self.app_mode_layout.addWidget(self.mode_label)
-        self.app_mode_layout.addWidget(self.mode_box)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(self.mode_label)
+        mode_row.addWidget(self.mode_box)
 
         self.fire_mode_label = QLabel("Rounds per F1:")
         self.fire_mode = QComboBox()
         self.fire_mode.addItems(["1", "2", "3", "ALL"])
         self.fire_mode.setCurrentText("ALL")
-
-        self.mode_layout = QHBoxLayout()
-        self.mode_layout.addWidget(self.fire_mode_label)
-        self.mode_layout.addWidget(self.fire_mode)
+        fire_row = QHBoxLayout()
+        fire_row.addWidget(self.fire_mode_label)
+        fire_row.addWidget(self.fire_mode)
 
         self.delay_label = QLabel("Delay:")
         self.delay_spin = QSpinBox()
@@ -111,17 +113,16 @@ class RoundMonitor(QWidget):
         self.delay_spin.setSingleStep(25)
         self.delay_spin.setSuffix(" ms")
         self.delay_spin.setValue(self.controller.leave_engine.delay_ms)
-
-        self.delay_layout = QHBoxLayout()
-        self.delay_layout.addWidget(self.delay_label)
-        self.delay_layout.addWidget(self.delay_spin)
+        delay_row = QHBoxLayout()
+        delay_row.addWidget(self.delay_label)
+        delay_row.addWidget(self.delay_spin)
 
         self.sequence_label = QLabel(
-            "Custom sequence (optional) — up to 20 actions. Selected actions override Rounds per F1 in Leave Entry mode."
+            "Custom sequence (optional) — up to 20 actions."
         )
         self.sequence_boxes: list[QComboBox] = []
         self.sequence_labels: list[QLabel] = []
-        self.sequence_layout = QGridLayout()
+        sequence_grid = QGridLayout()
         for index in range(self.SEQUENCE_SLOTS):
             label = QLabel(str(index + 1))
             box = QComboBox()
@@ -131,12 +132,21 @@ class RoundMonitor(QWidget):
             self.sequence_boxes.append(box)
             row = index // self.SEQUENCE_COLUMNS
             col = (index % self.SEQUENCE_COLUMNS) * 2
-            self.sequence_layout.addWidget(label, row, col)
-            self.sequence_layout.addWidget(box, row, col + 1)
+            sequence_grid.addWidget(label, row, col)
+            sequence_grid.addWidget(box, row, col + 1)
+
+        self.saved_label = QLabel("Saved sequence:")
+        self.saved_box = QComboBox()
+        self.saved_box.addItem("— Select saved sequence —")
+        self.save_sequence_button = QPushButton("Save Current")
+        self.delete_sequence_button = QPushButton("Delete Saved")
+        saved_row = QHBoxLayout()
+        saved_row.addWidget(self.saved_label)
+        saved_row.addWidget(self.saved_box, 1)
+        saved_row.addWidget(self.save_sequence_button)
+        saved_row.addWidget(self.delete_sequence_button)
 
         self.clear_sequence_button = QPushButton("Clear Custom Sequence")
-        self.clear_sequence_button.clicked.connect(self.clear_custom_sequence)
-
         self.hotkeys_label = QLabel(
             "F1 Fire  •  R Reload Last Round  •  F4 Reload Batch  •  F3 Abort"
         )
@@ -150,11 +160,12 @@ class RoundMonitor(QWidget):
         layout.addWidget(self.current_label)
         layout.addWidget(self.next_label)
         layout.addWidget(self.data_table)
-        layout.addLayout(self.app_mode_layout)
-        layout.addLayout(self.mode_layout)
-        layout.addLayout(self.delay_layout)
+        layout.addLayout(mode_row)
+        layout.addLayout(fire_row)
+        layout.addLayout(delay_row)
         layout.addWidget(self.sequence_label)
-        layout.addLayout(self.sequence_layout)
+        layout.addLayout(sequence_grid)
+        layout.addLayout(saved_row)
         layout.addWidget(self.clear_sequence_button)
         layout.addWidget(self.hotkeys_label)
         layout.addWidget(self.load_button)
@@ -163,9 +174,14 @@ class RoundMonitor(QWidget):
         self.mode_box.currentTextChanged.connect(self._mode_changed)
         self.fire_mode.currentTextChanged.connect(self.controller.set_rounds_per_fire)
         self.delay_spin.valueChanged.connect(self.controller.set_delay_ms)
+        self.clear_sequence_button.clicked.connect(self.clear_custom_sequence)
+        self.save_sequence_button.clicked.connect(self.save_current_sequence)
+        self.delete_sequence_button.clicked.connect(self.delete_saved_sequence)
+        self.saved_box.currentTextChanged.connect(self.load_saved_sequence)
         self.bridge.refresh.connect(self.refresh_view)
         self.bridge.status.connect(self.status_label.setText)
 
+        self.refresh_saved_sequences()
         self.resize(700, 760)
         self.refresh_view()
         self.apply_mode_layout()
@@ -178,13 +194,18 @@ class RoundMonitor(QWidget):
 
     def apply_mode_layout(self) -> None:
         month_mode = self.controller.mode == "MONTH TYPER"
-
-        # Month Typer is intended as a compact side monitor. Hide Leave-only
-        # controls and size the window to the four-column table.
-        self.fire_mode_label.setVisible(not month_mode)
-        self.fire_mode.setVisible(not month_mode)
-        self.sequence_label.setVisible(not month_mode)
-        self.clear_sequence_button.setVisible(not month_mode)
+        leave_widgets = [
+            self.fire_mode_label,
+            self.fire_mode,
+            self.sequence_label,
+            self.saved_label,
+            self.saved_box,
+            self.save_sequence_button,
+            self.delete_sequence_button,
+            self.clear_sequence_button,
+        ]
+        for widget in leave_widgets:
+            widget.setVisible(not month_mode)
         for label, box in zip(self.sequence_labels, self.sequence_boxes):
             label.setVisible(not month_mode)
             box.setVisible(not month_mode)
@@ -215,11 +236,66 @@ class RoundMonitor(QWidget):
         self.controller.set_custom_sequence(actions)
 
     def clear_custom_sequence(self) -> None:
-        for box in self.sequence_boxes:
-            box.blockSignals(True)
-            box.setCurrentText("NONE")
-            box.blockSignals(False)
+        self._set_sequence_boxes([])
         self.controller.set_custom_sequence([])
+        self.saved_box.blockSignals(True)
+        self.saved_box.setCurrentIndex(0)
+        self.saved_box.blockSignals(False)
+
+    def _set_sequence_boxes(self, actions: list[str]) -> None:
+        padded = actions[: self.SEQUENCE_SLOTS] + ["NONE"] * self.SEQUENCE_SLOTS
+        for index, box in enumerate(self.sequence_boxes):
+            box.blockSignals(True)
+            box.setCurrentText(padded[index])
+            box.blockSignals(False)
+
+    def refresh_saved_sequences(self, select_name: str | None = None) -> None:
+        sequences = self.sequence_store.load_all()
+        self.saved_box.blockSignals(True)
+        self.saved_box.clear()
+        self.saved_box.addItem("— Select saved sequence —")
+        for name in sorted(sequences, key=str.lower):
+            self.saved_box.addItem(name)
+        if select_name:
+            index = self.saved_box.findText(select_name)
+            if index >= 0:
+                self.saved_box.setCurrentIndex(index)
+        self.saved_box.blockSignals(False)
+
+    def save_current_sequence(self) -> None:
+        actions = [box.currentText() for box in self.sequence_boxes]
+        actions = [action for action in actions if action != "NONE"]
+        if not actions:
+            self.bridge.status.emit("SAVE ERROR — CUSTOM SEQUENCE IS EMPTY")
+            return
+
+        name, ok = QInputDialog.getText(self, "Save Sequence", "Sequence name:")
+        name = name.strip()
+        if not ok or not name:
+            return
+
+        self.sequence_store.save(name, actions)
+        self.refresh_saved_sequences(select_name=name)
+        self.bridge.status.emit(f"SAVED SEQUENCE: {name}")
+
+    def load_saved_sequence(self, name: str) -> None:
+        if not name or name.startswith("—"):
+            return
+        actions = self.sequence_store.load_all().get(name)
+        if not actions:
+            return
+        self._set_sequence_boxes(actions)
+        self.controller.set_custom_sequence(actions)
+        self.bridge.status.emit(f"LOADED SEQUENCE: {name}")
+
+    def delete_saved_sequence(self) -> None:
+        name = self.saved_box.currentText()
+        if not name or name.startswith("—"):
+            self.bridge.status.emit("SELECT A SAVED SEQUENCE FIRST")
+            return
+        if self.sequence_store.delete(name):
+            self.refresh_saved_sequences()
+            self.bridge.status.emit(f"DELETED SEQUENCE: {name}")
 
     def load_clipboard(self) -> None:
         rows = parse_tabular_text(pyperclip.paste())
@@ -264,17 +340,14 @@ class RoundMonitor(QWidget):
         active_row = self.magazine.batch_index
         active_brush = QColor(255, 235, 59, 204)
         normal_brush = QColor(0, 0, 0, 0)
-
         for row in range(self.data_table.rowCount()):
             for column in range(self.data_table.columnCount()):
                 item = self.data_table.item(row, column)
-                if item is None:
-                    continue
-                item.setBackground(active_brush if row == active_row else normal_brush)
-
+                if item:
+                    item.setBackground(active_brush if row == active_row else normal_brush)
         if 0 <= active_row < self.data_table.rowCount():
             item = self.data_table.item(active_row, 0)
-            if item is not None:
+            if item:
                 self.data_table.scrollToItem(item, QAbstractItemView.PositionAtCenter)
 
     @staticmethod
@@ -285,7 +358,6 @@ class RoundMonitor(QWidget):
     def refresh_view(self) -> None:
         batch_no, total_batches, round_no, total_rounds = self.magazine.progress()
         self.highlight_current_row()
-
         if total_batches == 0:
             self.progress_label.setText("No magazine loaded")
             self.current_label.setText("CURRENT\n—")
@@ -309,7 +381,9 @@ class RoundMonitor(QWidget):
                 )
             else:
                 self.current_label.setText("CURRENT\nDONE")
-            self.next_label.setText("F1: TYPE MONTH → TAB → PASTE → TAB → PASTE → TAB → PASTE → TAB")
+            self.next_label.setText(
+                "F1: TYPE MONTH → TAB → PASTE → TAB → PASTE → TAB → PASTE → TAB"
+            )
         else:
             self.current_label.setText(f"CURRENT\n{current.value if current else 'DONE'}")
             self.next_label.setText(f"NEXT\n{next_value if next_value is not None else '—'}")
@@ -330,10 +404,11 @@ class MagclipApp:
 
     def set_mode(self, value: str) -> None:
         self.mode = value
-        if value == "MONTH TYPER":
-            self.bridge.status.emit("MONTH TYPER — F1 PROCESSES ONE FULL ROW")
-        else:
-            self.bridge.status.emit("LEAVE ENTRY MODE")
+        self.bridge.status.emit(
+            "MONTH TYPER — F1 PROCESSES ONE FULL ROW"
+            if value == "MONTH TYPER"
+            else "LEAVE ENTRY MODE"
+        )
         self.bridge.refresh.emit()
 
     def set_rounds_per_fire(self, value: str) -> None:
@@ -351,20 +426,19 @@ class MagclipApp:
     def set_custom_sequence(self, actions: list[str]) -> None:
         self.custom_sequence = [action for action in actions if action != "NONE"]
         if self.custom_sequence and self.mode == "LEAVE ENTRY":
-            preview = " → ".join(self.custom_sequence)
-            self.bridge.status.emit(f"CUSTOM ({len(self.custom_sequence)}): {preview}")
+            self.bridge.status.emit(
+                f"CUSTOM ({len(self.custom_sequence)}): {' → '.join(self.custom_sequence)}"
+            )
         elif not self.custom_sequence:
             self.bridge.status.emit("CUSTOM SEQUENCE OFF")
 
     def fire_current_batch(self) -> None:
         if self.running:
             return
-
         batch = self.magazine.current_batch()
         if batch is None:
             self.bridge.status.emit("EMPTY")
             return
-
         start_round = self.magazine.round_index
         remaining = batch.rounds[start_round:]
         if not remaining:
@@ -380,7 +454,6 @@ class MagclipApp:
                     self.bridge.status.emit("MONTH TYPER ERROR — RELOAD BATCH WITH F4")
                     self.running = False
                     return
-
                 values = [round_.value for round_ in batch.rounds]
                 result = self.month_engine.run_row(self.context, values)
                 if result.completed:
@@ -401,13 +474,9 @@ class MagclipApp:
                     self.bridge.status.emit("CUSTOM ERROR — NOT ENOUGH ROUNDS")
                     self.running = False
                     return
-
                 values = [round_.value for round_ in remaining[:paste_count]]
                 result, consumed = self.leave_engine.run_sequence(
-                    self.context,
-                    values,
-                    start_round,
-                    self.custom_sequence,
+                    self.context, values, start_round, self.custom_sequence
                 )
                 if result.completed:
                     for _ in range(consumed):
